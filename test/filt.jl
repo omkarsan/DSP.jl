@@ -1,5 +1,5 @@
 !(dirname(@__FILE__) in LOAD_PATH) && push!(LOAD_PATH, dirname(@__FILE__))
-using DSP, Compat, Compat.Test, Compat.Random, FilterTestHelpers
+using DSP, Test, Random, FilterTestHelpers
 #
 # filt with different filter forms
 #
@@ -30,20 +30,20 @@ using DSP, Compat, Compat.Test, Compat.Random, FilterTestHelpers
                 @test res ≈ filt(bq, x)
                 @test res ≈ filt!(similar(x), bq, x)
                 f = DF2TFilter(bq)
-                @test tfres == [filt(f, x[1:50]); filt(f, x[51:end])]
+                @test tfres ≈ [filt(f, x[1:50]); filt(f, x[51:end])]
             end
 
             # Test that filt with zpk converts
-            @test res == filt(zpk, x)
-            @test res == filt!(similar(x), zpk, x)
+            @test res ≈ filt(zpk, x)
+            @test res ≈ filt!(similar(x), zpk, x)
 
             # Test with DF2TFilter
             f = DF2TFilter(sos)
-            @test res == [filt(f, x[1:50]); filt(f, x[51:end])]
+            @test res ≈ [filt(f, x[1:50]); filt(f, x[51:end])]
             f = DF2TFilter(tf)
-            @test tfres == [filt(f, x[1:50]); filt(f, x[51:end])]
+            @test tfres ≈ [filt(f, x[1:50]); filt(f, x[51:end])]
             f = DF2TFilter(zpk)
-            @test res == [filt(f, x[1:50]); filt(f, x[51:end])]
+            @test res ≈ [filt(f, x[1:50]); filt(f, x[51:end])]
         end
     end
 

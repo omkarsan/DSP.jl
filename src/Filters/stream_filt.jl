@@ -10,7 +10,7 @@ mutable struct FIRStandard{T} <: FIRKernel{T}
 end
 
 function FIRStandard(h::Vector)
-    h    = Compat.reverse(h, dims=1)
+    h    = reverse(h, dims=1)
     hLen = length(h)
     FIRStandard(h, hLen)
 end
@@ -48,7 +48,7 @@ mutable struct FIRDecimator{T} <: FIRKernel{T}
 end
 
 function FIRDecimator(h::Vector, decimation::Integer)
-    h            = Compat.reverse(h, dims=1)
+    h            = reverse(h, dims=1)
     hLen         = length(h)
     inputDeficit = 1
     FIRDecimator(h, hLen, decimation, inputDeficit)
@@ -105,7 +105,9 @@ mutable struct FIRArbitrary{T} <: FIRKernel{T}
     hLen::Int
 end
 
-function FIRArbitrary(h::Vector, rate::Real, Nϕ::Integer)
+function FIRArbitrary(h::Vector, rate_in::Real, Nϕ_in::Integer)
+    rate         = convert(Float64, rate_in)
+    Nϕ           = convert(Int, Nϕ_in)
     dh           = [diff(h); zero(eltype(h))]
     pfb          = taps2pfb(h,  Nϕ)
     dpfb         = taps2pfb(dh, Nϕ)
@@ -117,7 +119,20 @@ function FIRArbitrary(h::Vector, rate::Real, Nϕ::Integer)
     inputDeficit = 1
     xIdx         = 1
     hLen         = length(h)
-    FIRArbitrary(rate, pfb, dpfb, Nϕ, tapsPerϕ, ϕAccumulator, ϕIdx, α, Δ, inputDeficit, xIdx, hLen)
+    FIRArbitrary(
+        rate,
+        pfb,
+        dpfb,
+        Nϕ,
+        tapsPerϕ,
+        ϕAccumulator,
+        ϕIdx,
+        α,
+        Δ,
+        inputDeficit,
+        xIdx,
+        hLen
+    )
 end
 
 
@@ -539,6 +554,7 @@ end
 
 function filt!(buffer::AbstractVector{Tb}, self::FIRFilter{FIRDecimator{Th}}, x::AbstractVector{Tx}) where {Tb,Th,Tx}
     kernel              = self.kernel
+    bufLen              = length(buffer)
     xLen                = length(x)
     history::Vector{Tx} = self.history
     bufIdx              = 0
@@ -551,6 +567,9 @@ function filt!(buffer::AbstractVector{Tb}, self::FIRFilter{FIRDecimator{Th}}, x:
 
     outLen              = outputlength(self, xLen)
     inputIdx            = kernel.inputDeficit
+
+    nbufout = fld(xLen - inputIdx, kernel.decimation) + 1
+    bufLen >= nbufout || throw(ArgumentError("buffer length insufficient"))
 
     while inputIdx <= xLen
         bufIdx += 1
@@ -600,7 +619,11 @@ function update(kernel::FIRArbitrary)
     kernel.α    = kernel.ϕAccumulator - kernel.ϕIdx
 end
 
-function filt!(buffer::AbstractVector{Tb}, self::FIRFilter{FIRArbitrary{Th}}, x::AbstractVector{Tx}) where {Tb,Th,Tx}
+function filt!(
+    buffer::AbstractVector{Tb},
+    self::FIRFilter{FIRArbitrary{Th}},
+    x::AbstractVector{Tx}
+) where {Tb,Th,Tx}
     kernel              = self.kernel
     pfb                 = kernel.pfb
     dpfb                = kernel.dpfb
@@ -632,7 +655,9 @@ function filt!(buffer::AbstractVector{Tb}, self::FIRFilter{FIRArbitrary{Th}}, x:
             yUpper = unsafe_dot(dpfb, kernel.ϕIdx, x, kernel.xIdx)
         end
 
-        @inbounds buffer[bufIdx] = yLower + yUpper * kernel.α
+        # Used to have @inbounds. Restore @inbounds if buffer length
+        # can be verified prior to access.
+        buffer[bufIdx] = yLower + yUpper * kernel.α
         update(kernel)
     end
 

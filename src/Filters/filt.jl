@@ -4,6 +4,7 @@
 # filt and filt!
 #
 
+
 ## PolynomialRatio
 _zerosi(f::PolynomialRatio{T}, x::AbstractArray{S}) where {T,S} =
     zeros(promote_type(T, S), max(length(f.a), length(f.b))-1)
@@ -386,47 +387,6 @@ function filt_stepstate(f::SecondOrderSections{T}) where T
     si
 end
 
-#
-# filt implementation for FIR filters (faster than Base)
-#
-
-for n = 2:15
-    silen = n-1
-    si = [Symbol("si$i") for i = 1:silen]
-    @eval function filt!(out, b::NTuple{$n,T}, x) where T
-        size(x) != size(out) && error("out size must match x")
-        ncols = Base.trailingsize(x, 2)
-        for col = 0:ncols-1
-            $(Expr(:block, [:($(si[i]) = zero(b[$i])*zero(x[1])) for i = 1:silen]...))
-            offset = col*size(x, 1)
-            @inbounds for i=1:size(x, 1)
-                xi = x[i+offset]
-                val = $(si[1]) + b[1]*xi
-                $(Expr(:block, [:($(si[j]) = $(si[j+1]) + b[$(j+1)]*xi) for j = 1:(silen-1)]...))
-                $(si[silen]) = b[$(silen+1)]*xi
-                out[i+offset] = val
-            end
-        end
-        out
-    end
-end
-
-let chain = :(throw(ArgumentError("invalid tuple size")))
-    for n = 15:-1:2
-        chain = quote
-            if length(h) == $n
-                filt!(out, ($([:(h[$i]) for i = 1:n]...),), x)
-            else
-                $chain
-            end
-        end
-    end
-
-    @eval function small_filt!(out::AbstractArray, h::AbstractVector{T}, x::AbstractArray) where T
-        $chain
-    end
-end
-
 """
     tdfilt(h, x)
 
@@ -434,7 +394,7 @@ Apply filter or filter coefficients `h` along the first dimension
 of array `x` using a naïve time-domain algorithm
 """
 function tdfilt(h::AbstractVector, x::AbstractArray{T}) where T<:Real
-    _tdfilt!(Array{T}(undef, size(x)), h, x)
+    filt!(Array{T}(undef, size(x)), h, ones(eltype(h), 1), x)
 end
 
 """
@@ -444,37 +404,7 @@ Like `tdfilt`, but writes the result into array `out`. Output array `out` may
 not be an alias of `x`, i.e. filtering may not be done in place.
 """
 function tdfilt!(out::AbstractArray, h::AbstractVector, x::AbstractArray)
-    size(x) != size(out) && error("out size must match x")
-    _tdfilt!(out, h, x)
-end
-
-# Does not check that 'out' and 'x' are the same length
-function _tdfilt!(out::AbstractArray, h::AbstractVector, x::AbstractArray)
-    if length(h) == 1
-        return mul!(out, h[1], x)
-    elseif length(h) <= 15
-        return small_filt!(out, h, x)
-    end
-
-    h = reverse(h)
-    hLen = length(h)
-    xLen = size(x, 1)
-    ncols = Base.trailingsize(x, 2)
-
-    for col = 0:ncols-1
-        offset = col*size(x, 1)
-        for i = 1:min(hLen-1, xLen)
-            dotprod = zero(eltype(h))*zero(eltype(x))
-            @simd for j = 1:i
-                @inbounds dotprod += h[hLen-i+j] * x[j+offset]
-            end
-            @inbounds out[i+offset] = dotprod
-        end
-        for i = hLen:xLen
-            @inbounds out[i+offset] = unsafe_dot(h, x, i+offset)
-        end
-    end
-    out
+    filt!(out, h, ones(eltype(h), 1), x)
 end
 
 filt(h::AbstractArray, x::AbstractArray) =
@@ -484,21 +414,22 @@ filt(h::AbstractArray, x::AbstractArray) =
 # fftfilt and filt
 #
 
-# Number of real operations required for overlap-save with nfft = 2^pow2 and filter
-# length nb
-os_fft_complexity(pow2, nb) = 4 * (2 ^ pow2 * (pow2 + 1)) / (2 ^ pow2 - nb + 1)
+# Rough estimate of number of multiplications per output sample
+os_fft_complexity(nfft, nb) =  (nfft * log2(nfft) + nfft) / (nfft - nb + 1)
 
 # Determine optimal length of the FFT for fftfilt
 function optimalfftfiltlength(nb, nx)
     first_pow2 = ceil(Int, log2(nb))
     last_pow2 = ceil(Int, log2(nx + nb - 1))
-    complexities = os_fft_complexity.(first_pow2:last_pow2, nb)
-
-    # Find power of 2 with least complexity relative to the first power of 2
-    relative_ind_best_pow2 = argmin(complexities)
-
-    best_pow2 = first_pow2 + relative_ind_best_pow2 - 1
-    nfft = 2 ^ best_pow2
+    last_complexity = os_fft_complexity(2 ^ first_pow2, nb)
+    pow2 = first_pow2 + 1
+    while pow2 <= last_pow2
+        new_complexity = os_fft_complexity(2 ^ pow2, nb)
+        new_complexity > last_complexity && break
+        last_complexity = new_complexity
+        pow2 += 1
+    end
+    nfft = pow2 > last_pow2 ? 2 ^ last_pow2 : 2 ^ (pow2 - 1)
 
     L = nfft - nb + 1
     if L > nx
@@ -605,20 +536,16 @@ function filt_choose_alg!(
     x::AbstractArray{<:Real}
 )
     nb = length(b)
-    nx = size(x, 1)
 
-    filtops_per_sample = min(nx, nb)
-
-    nfft = optimalfftfiltlength(nb, nx)
-    fftops_per_sample = os_fft_complexity(log2(nfft), nb)
-
-    if filtops_per_sample > fftops_per_sample
+    if nb > SMALL_FILT_CUTOFF
+        nx = size(x, 1)
+        nfft = optimalfftfiltlength(nb, nx)
         _fftfilt!(out, b, x, nfft)
     else
-        _tdfilt!(out, b, x)
+        tdfilt!(out, b, x)
     end
 end
 
 function filt_choose_alg!(out::AbstractArray, b::AbstractArray, x::AbstractArray)
-    _tdfilt!(out, b, x)
+    tdfilt!(out, b, x)
 end
