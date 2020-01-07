@@ -237,9 +237,9 @@ end
 # Zero phase digital filtering by processing data in forward and reverse direction
 function iir_filtfilt(b::AbstractVector, a::AbstractVector, x::AbstractArray)
     zi = filt_stepstate(b, a)
-    zitmp = copy(zi)
     pad_length = 3 * (max(length(a), length(b)) - 1)
     t = Base.promote_eltype(b, a, x)
+    zitmp = similar(zi, t)
     extrapolated = Vector{t}(undef, size(x, 1)+pad_length*2)
     out = similar(x, t)
 
@@ -312,9 +312,9 @@ end
 # Zero phase digital filtering for second order sections
 function filtfilt(f::SecondOrderSections{T,G}, x::AbstractArray{S}) where {T,G,S}
     zi = filt_stepstate(f)
-    zitmp = similar(zi)
     pad_length = 6 * length(f.biquads)
     t = Base.promote_type(T, G, S)
+    zitmp = similar(zi, t)
     extrapolated = Vector{t}(undef, size(x, 1)+pad_length*2)
     out = similar(x, t)
 
@@ -413,32 +413,6 @@ filt(h::AbstractArray, x::AbstractArray) =
 #
 # fftfilt and filt
 #
-
-# Rough estimate of number of multiplications per output sample
-os_fft_complexity(nfft, nb) =  (nfft * log2(nfft) + nfft) / (nfft - nb + 1)
-
-# Determine optimal length of the FFT for fftfilt
-function optimalfftfiltlength(nb, nx)
-    first_pow2 = ceil(Int, log2(nb))
-    last_pow2 = ceil(Int, log2(nx + nb - 1))
-    last_complexity = os_fft_complexity(2 ^ first_pow2, nb)
-    pow2 = first_pow2 + 1
-    while pow2 <= last_pow2
-        new_complexity = os_fft_complexity(2 ^ pow2, nb)
-        new_complexity > last_complexity && break
-        last_complexity = new_complexity
-        pow2 += 1
-    end
-    nfft = pow2 > last_pow2 ? 2 ^ last_pow2 : 2 ^ (pow2 - 1)
-
-    L = nfft - nb + 1
-    if L > nx
-        # If L > nx, better to find next fast power
-        nfft = nextfastfft(nx + nb - 1)
-    end
-
-    nfft
-end
 
 """
     fftfilt(h, x)
